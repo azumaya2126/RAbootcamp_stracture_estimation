@@ -1,0 +1,163 @@
+---
+title: "stracture_estimation"
+output: html_document
+date: "2023-08-30"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(mlogit)
+library(stargazer)
+library(optimx)
+
+```
+
+
+```{r}
+
+data <- readr::read_csv("/Users/azuma/My Documents/神戸大/07_大学院/RAブートキャンプ/構造推定/KTSurvey_RABootcamp2023_cleaned_new.csv")
+
+N <- length(data$ID)
+
+data |> 
+  select(ID, starts_with("Q")) |>
+  gather(key = Q, value = choice, starts_with("Q")) -> data_fig
+
+View(data_fig)
+
+data_fig |>
+    mutate( Q = ifelse(Q == "Q1", "Q1: (200円, 200円)" ,Q),  
+            Q = ifelse(Q == "Q2", "Q2: (180円, 200円)" ,Q),  
+            Q = ifelse(Q == "Q3", "Q3: (200円, 170円)" ,Q),  
+            Q = ifelse(Q == "Q4", "Q4: (220円, 200円)" ,Q),  
+            Q = ifelse(Q == "Q5", "Q5: (190円, 210円)" ,Q) ) -> data_fig
+
+data_fig |>
+  group_by(Q, choice) |>
+  tally() |>
+  mutate(n = n/N) |>
+  pivot_wider(id_cols = "Q", names_from = "choice", values_from = "n") |>
+  knitr::kable(digits = 2) -> tab
+
+tab
+
+
+```
+
+```{r}
+p <- ggplot() +
+  geom_bar(data = data_fig, aes(y = Q,  fill = as.factor(choice)), 
+           position = "fill") +
+  theme(legend.position = "bottom", axis.title.x = element_blank()) +
+  scale_fill_discrete(name = "Choice")
+
+p
+
+```
+
+```{r}
+data |> 
+  filter(experience != "4 : 食べたことがない") |>
+  gather(key = "occasion", value = choice, starts_with("Q")) -> data_for_estimation
+
+```
+
+```{r}
+data.frame( occasion = paste0("Q", 1:5), 
+                price_0 = numeric(5), 
+                price_1 = c(200, 180, 200, 220, 190), 
+                price_2 = c(200, 200, 170, 200, 210)) |> 
+  as_tibble() -> pricedata
+
+data_for_estimation |> 
+  left_join(pricedata) |>
+  arrange(ID, occasion) -> data_for_estimation
+
+View(data_for_estimation)
+
+
+```
+
+```{r}
+#ダミー変数追加
+data_for_estimation |>
+    mutate( Kinoko_0 = 0, 
+            Kinoko_1 = 1, 
+            Kinoko_2 = 0, 
+            Takenoko_0 = 0, 
+            Takenoko_1 = 0, 
+            Takenoko_2 = 1   ) |> 
+    arrange(ID, occasion) -> data_for_estimation
+
+#choiceを再定義
+data_for_estimation |>
+  mutate( choice = case_when( choice == "1 : きのこの山を買う" ~ 1, 
+                              choice == "2 : たけのこの里を買う" ~ 2, 
+                              choice == "3 : どちらも買わない" ~ 0 )) -> data_for_estimation
+
+#通し番号
+data_for_estimation$choiceid <- 1:nrow(data_for_estimation)
+```
+
+```{r}
+datalogit <- dfidx(data = as.data.frame(data_for_estimation),
+                   choice = "choice", 
+                   varying = 9:17, 
+                   sep = "_",
+                   idx = list(c("choiceid", "ID")), 
+                   idnames = c("chid", "alt"),
+                   opposite = c("price"))
+
+head(datalogit$idx)
+
+```
+
+```{r}
+multilogit <- mlogit(formula = choice ~ price + Kinoko + Takenoko | 0, 
+                      data = datalogit)
+
+summary(multilogit)
+```
+
+```{r, eval = FALSE}
+stargazer(multilogit, type = "text")
+```
+
+
+```{r, cache = FALSE}
+rcdclogit <- mlogit(choice ~ price + Kinoko + Takenoko | 0, 
+                    data = datalogit, 
+                    panel = TRUE, 
+                    rpar = c(price = "ln", Kinoko = "n", Takenoko = "n") , 
+                    R = 50, 
+                    correlation = FALSE)
+
+stargazer(multilogit, rcdclogit, type="text")
+```
+```{r}
+dist_Kinoko = rpar(rcdclogit, 'Kinoko')
+dist_Takenoko = rpar(rcdclogit, 'Takenoko')
+dist_price = rpar(rcdclogit, 'price')
+
+p1 <- ggplot(data = data.frame(x = c(-25, 25)), aes(x)) +
+  stat_function(fun = dnorm, n = 101, 
+                args = list(mean = dist_Kinoko$mean -dist_Takenoko$mean , 
+                sd = sqrt(dist_Kinoko$sigma^2 + dist_Takenoko$sigma^2))) +
+  ylab("") +
+  ggtitle("Preference Kinoko over Takenoko")
+
+p1
+```
+
+
+```{r}
+p2 <- ggplot(data = data.frame(x = c(0.05, 0.3) ), aes(x)) +
+  stat_function(fun = dlnorm, n = 101, 
+                args = list(mean = dist_price$mean, sd = dist_price$sigma), colour = "red" ) + 
+  ylab("") +
+  scale_y_continuous(breaks = NULL) + ggtitle("Beta (price coefficient)")
+```
+
+```{r, eval = FALSE}
+plot(p2)
+```
